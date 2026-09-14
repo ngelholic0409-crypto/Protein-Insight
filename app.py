@@ -473,8 +473,9 @@ if page == "🏠 단백질 분석":
             # 종합 주의 영역
             # -------------------------
 
+            # 3D 주의 영역 표시를 위해 chain 정보도 유지합니다.
             merged = df[
-                ["position", "pLDDT"]
+                ["chain", "residue", "position", "pLDDT"]
             ].copy()
 
             merged["mean_PAE"] = mean_pae_by_residue
