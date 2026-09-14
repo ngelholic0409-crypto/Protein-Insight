@@ -158,7 +158,8 @@ def parse_pae(file_bytes):
     return pae, float(max_pae)
 
 
-def render_3d_structure(structure_text, file_name, attention_positions):
+def make_3d_viewer(structure_text, file_name):
+    """구조 파일을 py3Dmol viewer로 불러옵니다."""
     viewer = py3Dmol.view(width=900, height=650)
 
     if file_name.lower().endswith(".pdb"):
@@ -166,41 +167,86 @@ def render_3d_structure(structure_text, file_name, attention_positions):
     else:
         viewer.addModel(structure_text, "mmcif")
 
+    viewer.setBackgroundColor("white")
+    return viewer
+
+
+def render_plddt_3d(structure_text, file_name, df):
+    """잔기별 pLDDT 구간에 따라 3D 구조를 색상으로 표시합니다."""
+    viewer = make_3d_viewer(structure_text, file_name)
+
+    # 기본값
     viewer.setStyle(
         {},
-        {
-            "cartoon": {
-                "color": "lightgray"
-            }
-        },
+        {"cartoon": {"color": "lightgray"}},
     )
 
-    for pos in attention_positions:
-        viewer.setStyle(
-            {"resi": int(pos)},
-            {
-                "cartoon": {
-                    "color": "red"
-                },
-                "stick": {
-                    "color": "red"
-                },
-            },
-        )
+    # AlphaFold에서 널리 사용하는 pLDDT 해석 구간
+    # 90-100: 매우 높음 / 70-90: 높음 / 50-70: 낮음 / 0-50: 매우 낮음
+    categories = [
+        ("very_high", "blue", df[df["pLDDT"] >= 90]),
+        ("high", "cyan", df[(df["pLDDT"] >= 70) & (df["pLDDT"] < 90)]),
+        ("low", "yellow", df[(df["pLDDT"] >= 50) & (df["pLDDT"] < 70)]),
+        ("very_low", "red", df[df["pLDDT"] < 50]),
+    ]
 
-        viewer.addLabel(
-            str(pos),
-            {
-                "resi": int(pos),
-                "backgroundColor": "white",
-                "fontColor": "black",
-                "fontSize": 12,
-            },
-        )
+    for _, color, subset in categories:
+        for chain_id, chain_df in subset.groupby("chain"):
+            positions = chain_df["position"].astype(int).tolist()
+            if not positions:
+                continue
+
+            viewer.setStyle(
+                {"chain": str(chain_id), "resi": positions},
+                {"cartoon": {"color": color}},
+            )
 
     viewer.zoomTo()
-    viewer.setBackgroundColor("white")
+    components.html(
+        viewer._make_html(),
+        height=680,
+        scrolling=False,
+    )
 
+
+def render_attention_3d(
+    structure_text,
+    file_name,
+    attention_rows,
+):
+    """종합 주의 residue를 빨간색으로 강조합니다."""
+    viewer = make_3d_viewer(structure_text, file_name)
+
+    viewer.setStyle(
+        {},
+        {"cartoon": {"color": "lightgray"}},
+    )
+
+    if not attention_rows.empty:
+        for chain_id, chain_df in attention_rows.groupby("chain"):
+            positions = chain_df["position"].astype(int).tolist()
+
+            viewer.setStyle(
+                {"chain": str(chain_id), "resi": positions},
+                {
+                    "cartoon": {"color": "red"},
+                    "stick": {"color": "red"},
+                },
+            )
+
+            for pos in positions:
+                viewer.addLabel(
+                    str(pos),
+                    {
+                        "chain": str(chain_id),
+                        "resi": int(pos),
+                        "backgroundColor": "white",
+                        "fontColor": "black",
+                        "fontSize": 12,
+                    },
+                )
+
+    viewer.zoomTo()
     components.html(
         viewer._make_html(),
         height=680,
@@ -351,8 +397,8 @@ if page == "🏠 단백질 분석":
                 """
                 <div class="card">
                     <h3>🧬 3D Structure</h3>
-                    예측된 단백질 구조와
-                    주의 영역을 3차원으로 확인합니다.
+                    pLDDT 신뢰도와
+                    종합 주의 영역을 3차원으로 확인합니다.
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -670,19 +716,79 @@ if page == "🏠 단백질 분석":
             st.markdown("## 🧬 3D 단백질 구조")
 
             st.write(
-                "종합 주의 residue는 3차원 구조에서 "
-                "빨간색으로 표시됩니다."
+                "pLDDT 기반 신뢰도와 종합 주의 영역을 "
+                "서로 다른 방식으로 확인할 수 있습니다."
             )
 
-            structure_text = file_bytes.decode(
-                "utf-8"
+            structure_text = file_bytes.decode("utf-8")
+
+            tab_plddt, tab_attention = st.tabs(
+                ["🎨 pLDDT 신뢰도 3D", "⚠️ 종합 주의 영역 3D"]
             )
 
-            render_3d_structure(
-                structure_text,
-                file_name,
-                attention_positions,
-            )
+            with tab_plddt:
+                st.markdown(
+                    """
+                    <div class="card">
+                        <div class="section-title">pLDDT 기반 구조 신뢰도</div>
+                        <div class="description">
+                            각 residue의 pLDDT 값을 색상으로 표현했습니다.
+                            색상이 다를수록 구조 예측 신뢰도 구간이 다릅니다.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                legend_col1, legend_col2, legend_col3, legend_col4 = st.columns(4)
+                with legend_col1:
+                    st.markdown("🔵 **90–100**  매우 높음")
+                with legend_col2:
+                    st.markdown("🩵 **70–90**  높음")
+                with legend_col3:
+                    st.markdown("🟡 **50–70**  낮음")
+                with legend_col4:
+                    st.markdown("🔴 **0–50**  매우 낮음")
+
+                render_plddt_3d(
+                    structure_text,
+                    file_name,
+                    df,
+                )
+
+            with tab_attention:
+                st.markdown(
+                    """
+                    <div class="card">
+                        <div class="section-title">pLDDT + PAE 종합 주의 영역</div>
+                        <div class="description">
+                            이 프로젝트에서 설정한 기준을 만족하는 residue를
+                            빨간색으로 강조했습니다.
+                            <br>
+                            <b>pLDDT &lt; 70 AND 평균 PAE &gt; 전체 평균 PAE</b>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                attention_rows = merged[merged["attention"]].copy()
+
+                if attention_rows.empty:
+                    st.info(
+                        "설정한 기준을 동시에 만족하는 residue가 없습니다."
+                    )
+                else:
+                    st.write(
+                        f"총 {len(attention_rows)}개의 "
+                        "종합 주의 residue가 빨간색으로 표시됩니다."
+                    )
+
+                render_attention_3d(
+                    structure_text,
+                    file_name,
+                    attention_rows,
+                )
 
             # -------------------------
             # 최저 pLDDT residue
@@ -883,7 +989,8 @@ elif page == "ℹ️ 소개":
 
         <b>5. 시각화</b><br>
         pLDDT 그래프, PAE heatmap,
-        3차원 단백질 구조를 구현했습니다.
+        pLDDT 색상 기반 3D 구조와
+        종합 주의 영역 3D 구조를 구현했습니다.
         <br><br>
 
         <b>6. 웹사이트 구현</b><br>
